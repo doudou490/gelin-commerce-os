@@ -9,12 +9,12 @@ services:
     envVars:
       - key: DATABASE_URL
         fromDatabase:
-          name: gelin-commerce-db
+          name: lavea-db
           property: connectionString
       - key: PGSSL
         value: "true"
 
 databases:
-  - name: gelin-commerce-db
-    databaseName: gelin_commerce
+  - name: lavea-db
+    databaseName: lavea_db
     plan: free
