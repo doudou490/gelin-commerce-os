@@ -1,7 +1,9 @@
 {
   "name":"gelin-commerce-os",
-  "version":"2.0.0",
+  "version":"4.0.0",
   "private":true,
-  "scripts":{"start":"node server.js"},
-  "dependencies":{"express":"^5.1.0"}
+  "type":"module",
+  "scripts":{"start":"node server.mjs"},
+  "engines":{"node":">=20 <26"},
+  "dependencies":{"pg":"^8.16.3"}
 }
