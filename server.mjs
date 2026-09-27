@@ -132,7 +132,7 @@ async function analyze(l) {
       const prompt = `Analyze this Algerian business using ONLY supplied facts. Never invent followers, ads, sales, revenue, reviews or results. Return JSON only with: recommendedService (website|landing_page|ecommerce|video|meta_ads|cro), score 0-100, painPoints array, observation, message, language. Message under 80 words in Algerian Darija or French and mention only verified observations. BUSINESS=${JSON.stringify({...l,audit})}`;
       const x = await fetchJson("https://api.openai.com/v1/responses",{
         method:"POST",
-        headers:{"content-type":"application/json","authorization:"Bearer "+process.env.OPENAI_API_KEY},
+        headers:{"content-type":"application/json","authorization":"Bearer "+process.env.OPENAI_API_KEY},
         body:JSON.stringify({model:MODEL,input:prompt})
       },20000);
       const text=x.output_text||"";
