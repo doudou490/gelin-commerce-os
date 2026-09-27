@@ -282,5 +282,5 @@ async function route(req,res) {
   return send(res,404,{error:"Not found",path:p});
 }
 
-const HTML = `__HTML_PLACEHOLDER__`;
+const HTML = await fs.readFile("./public/index.html","utf8");
 http.createServer((req,res)=>route(req,res).catch(e=>{console.error(e);send(res,500,{error:e.message||"Server error"});})).listen(PORT,"0.0.0.0",()=>console.log("DZ Sales Agent 2.0 listening on "+PORT));
