@@ -1,42 +1,83 @@
 import http from "node:http";
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
-const PORT=Number(process.env.PORT||10000),FILE="./sales-agent-data.json",MODEL=process.env.OPENAI_MODEL||"gpt-5.6-luna";
-const cities=["Sétif","El Eulma"],categories=["clothing","restaurant","cafe","cosmetics","gym","real_estate","electronics","local_company","ecommerce"];
-const seed={leads:[],outreach:[],audits:[],settings:{owner:"DZ Digital Growth",cities,categories,services:["website","landing_page","video","meta_ads","ecommerce"]}};
-async function db(){try{return JSON.parse(await fs.readFile(FILE,"utf8"))}catch{await fs.writeFile(FILE,JSON.stringify(seed,null,2));return structuredClone(seed)}}
-async function save(x){await fs.writeFile(FILE,JSON.stringify(x,null,2))}
-const id=()=>crypto.randomUUID();
-function json(res,status,data){res.writeHead(status,{"content-type":"application/json; charset=utf-8","access-control-allow-origin":"*","access-control-allow-headers":"content-type"});res.end(JSON.stringify(data))}
-async function body(req){let s="";for await(const c of req)s+=c;return s?JSON.parse(s):{}}
-function score(l){let s=0,reasons=[];if(!l.website){s+=20;reasons.push("لا يوجد موقع واضح")}else if(l.websiteWeak||l.websiteOutdated){s+=10;reasons.push("الموقع يحتاج تحسين")}if(l.socialActive)s+=10;if(l.ecommercePotential)s+=15;if(l.weakCreative)s+=15;if(l.paidAdsSignal)s+=10;if(l.weakFunnel)s+=10;if(l.ecommerceActivity)s+=15;if(l.publicAudience)s+=10;if(l.contactable)s+=5;return{score:Math.min(100,s),reasons}}
-function heuristic(l){const missing=!l.website,cat=String(l.category||"").toLowerCase();let service=missing?"website":(l.ecommerceActivity||cat.includes("ecommerce")?"ecommerce":l.weakCreative?"video":l.weakFunnel?"landing_page":l.paidAdsSignal?"meta_ads":"website");const names={website:"موقع احترافي",landing_page:"Landing Page",video:"فيديوهات Reels/UGC",meta_ads:"Meta Ads",ecommerce:"تحسين مبيعات E-commerce"};return{recommendedService:service,recommendedServiceLabel:names[service],score:score(l)}}
-async function aiAnalyze(l){
- if(!process.env.OPENAI_API_KEY)return heuristic(l);
- const prompt='أنت وكيل مبيعات B2B لخدمات رقمية في الجزائر. حلّل هذا النشاط من المعلومات المعطاة فقط. لا تخترع أي معلومة. أرجع JSON فقط: {"recommendedService":"website|landing_page|video|meta_ads|ecommerce","score":0,"painPoints":[],"observation":"","message":"","language":"darija|french"}. الرسالة قصيرة ومحترمة وشخصية، أقل من 80 كلمة، وتذكر ملاحظة موثقة من البيانات. لا تعد بنتيجة مضمونة. BUSINESS='+JSON.stringify(l);
- const r=await fetch("https://api.openai.com/v1/responses",{method:"POST",headers:{"authorization":"Bearer "+process.env.OPENAI_API_KEY,"content-type":"application/json"},body:JSON.stringify({model:MODEL,input:prompt})});
- if(!r.ok)throw Error("AI HTTP "+r.status);const x=await r.json(),text=x.output_text||x.output?.map(y=>y.content?.map(z=>z.text||"").join("")).join("")||"";try{return JSON.parse(text.replace(/^\\x60\\x60\\x60json|\\x60\\x60\\x60$/g,"").trim())}catch{return heuristic(l)}
+
+const PORT = Number(process.env.PORT || 10000);
+const DATA = "./sales-agent-data.json";
+const MODEL = process.env.OPENAI_MODEL || "gpt-5.6-luna";
+const CITIES = ["Sétif", "El Eulma"];
+const CATEGORIES = ["clothing","restaurant","cafe","cosmetics","gym","real_estate","electronics","local_company","ecommerce"];
+
+const ID = () => crypto.randomUUID();
+async function load() {
+  try { return JSON.parse(await fs.readFile(DATA, "utf8")); }
+  catch { const d={leads:[],outreach:[],audits:[],settings:{cities:CITIES,categories:CATEGORIES}}; await save(d); return d; }
 }
-async function discover(){
- if(!process.env.GOOGLE_MAPS_API_KEY)throw Error("ضع GOOGLE_MAPS_API_KEY لتفعيل الاكتشاف التلقائي");
- const out=[];for(const city of cities)for(const cat of categories){const r=await fetch("https://places.googleapis.com/v1/places:searchText",{method:"POST",headers:{"content-type":"application/json","X-Goog-Api-Key":process.env.GOOGLE_MAPS_API_KEY,"X-Goog-FieldMask":"places.id,places.displayName,places.formattedAddress,places.websiteUri,places.nationalPhoneNumber,places.types,places.rating,places.userRatingCount"},body:JSON.stringify({textQuery:cat+" in "+city+", Algeria",pageSize:10,languageCode:"ar"})});if(!r.ok)continue;const x=await r.json();for(const p of x.places||[])out.push({source:"google_places",sourceId:p.id,businessName:p.displayName?.text||"",city,address:p.formattedAddress||"",phone:p.nationalPhoneNumber||"",website:p.websiteUri||"",types:p.types||[],rating:p.rating,userRatingCount:p.userRatingCount,category:cat,contactable:!!p.nationalPhoneNumber||!!p.websiteUri})}return out;
+async function save(d){ await fs.writeFile(DATA, JSON.stringify(d,null,2)); }
+function send(res,status,data,type="application/json"){res.writeHead(status,{"content-type":type+"; charset=utf-8","access-control-allow-origin":"*"});res.end(type==="text/html"?data:JSON.stringify(data));}
+async function reqBody(req){let s="";for await(const c of req)s+=c;return s?JSON.parse(s):{};}
+
+function heuristic(l){
+  let score=0,reasons=[];
+  if(!l.website){score+=20;reasons.push("لا يوجد موقع واضح");}
+  if(l.websiteWeak||l.websiteOutdated){score+=10;reasons.push("الموقع يحتاج تحسين");}
+  if(l.socialActive){score+=10;reasons.push("وجود نشاط اجتماعي");}
+  if(l.ecommercePotential){score+=15;reasons.push("إمكانية بيع إلكتروني");}
+  if(l.weakCreative){score+=15;reasons.push("الـcreative يحتاج تحسين");}
+  if(l.paidAdsSignal){score+=10;reasons.push("إشارة إعلانية");}
+  if(l.weakFunnel){score+=10;reasons.push("الفunnel يحتاج تحسين");}
+  if(l.ecommerceActivity){score+=15;reasons.push("نشاط E-commerce");}
+  if(l.publicAudience){score+=10;reasons.push("جمهور عام");}
+  if(l.contactable){score+=5;}
+  const cat=String(l.category||"").toLowerCase();
+  let service=!l.website?"website":(l.ecommerceActivity||cat==="ecommerce"?"ecommerce":l.weakCreative?"video":l.weakFunnel?"landing_page":l.paidAdsSignal?"meta_ads":"website");
+  const labels={website:"موقع احترافي",landing_page:"Landing Page",video:"Reels / UGC",meta_ads:"Meta Ads",ecommerce:"تحسين مبيعات E-commerce"};
+  return {recommendedService:service,recommendedServiceLabel:labels[service],score:Math.min(100,score),painPoints:reasons,observation:reasons[0]||"يحتاج تدقيق يدوي",message:""};
 }
-function audit(d,a,lid,detail){d.audits.unshift({id:id(),at:new Date().toISOString(),action:a,leadId:lid,detail})}
-const html='<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DZ Sales Agent</title><style>body{margin:0;background:#0b1220;color:#eef4ff;font-family:Arial}.wrap{max-width:1450px;margin:auto;padding:24px}.top{display:flex;justify-content:space-between;align-items:center;gap:12px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:20px 0}.card,.panel{background:#111d31;border:1px solid #293a56;border-radius:12px;padding:16px}.card b{font-size:28px}.actions{display:flex;gap:8px;flex-wrap:wrap}.btn{background:#192942;border:1px solid #3a4c69;color:white;padding:9px 13px;border-radius:8px;cursor:pointer}.primary{background:#00a77d;border-color:#00a77d}.table{width:100%;border-collapse:collapse}.table th,.table td{padding:10px;border-bottom:1px solid #263650;text-align:right}.muted{color:#91a5c5}.tag{display:inline-block;padding:4px 7px;border-radius:999px;background:#20324f;margin:2px}.modal{position:fixed;inset:0;background:#000b;display:flex;align-items:center;justify-content:center;padding:20px}.modal>div{max-width:850px;width:100%;max-height:90vh;overflow:auto;background:#111d31;padding:20px;border-radius:14px}.hidden{display:none}.code{direction:ltr;text-align:left;white-space:pre-wrap;background:#08101d;padding:12px;border-radius:8px}@media(max-width:800px){.wrap{padding:12px}.table{font-size:12px}}</style></head><body><div class="wrap"><div class="top"><div><h1>🎯 DZ Sales Agent</h1><p class="muted">Lead generation + audit + qualification + personalized outreach</p></div><div class="actions"><button class="btn primary" onclick="discover()">🔎 اكتشاف Sétif + El Eulma</button><button class="btn" onclick="seedDemo()">🧪 Demo</button></div></div><div id="app"></div></div><div id="modal" class="modal hidden"></div><script>
-let D={};const $=s=>document.querySelector(s),esc=x=>String(x??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));async function api(p,o={}){let r=await fetch(p,{headers:{"content-type":"application/json"},...o}),x=await r.json();if(!r.ok)throw Error(x.error||"Error");return x}async function load(){D=await api("/api/leads");render()}
-function render(){let a=D.leads||[],counts=a.reduce((m,x)=>(m[x.status]=(m[x.status]||0)+1,m),{});$("#app").innerHTML='<div class="cards"><div class="card">كل الـLeads<br><b>'+a.length+'</b></div><div class="card">رسائل جاهزة<br><b>'+(counts.MESSAGE_READY||0)+'</b></div><div class="card">تم اعتمادها<br><b>'+(counts.APPROVED||0)+'</b></div><div class="card">مهتمون<br><b>'+(counts.INTERESTED||0)+'</b></div></div><div class="panel"><div class="actions"><button class="btn" onclick="filter(\\'ALL\\')">الكل</button><button class="btn" onclick="filter(\\'MESSAGE_READY\\')">رسائل جاهزة</button><button class="btn" onclick="filter(\\'APPROVED\\')">معتمدة</button><button class="btn" onclick="filter(\\'INTERESTED\\')">مهتم</button></div><div style="overflow:auto"><table class="table"><thead><tr><th>Business</th><th>City</th><th>Service</th><th>Score</th><th>Status</th><th>Observation</th><th></th></tr></thead><tbody>'+a.map(l=>'<tr><td><b>'+esc(l.businessName)+'</b><br><span class="muted">'+esc(l.category)+'</span></td><td>'+esc(l.city)+'</td><td><span class="tag">'+esc(l.recommendedServiceLabel||"-")+'</span></td><td>'+Number(l.score||0)+'/100</td><td>'+esc(l.status)+'</td><td>'+esc(l.observation||l.painPoints?.[0]||"")+'</td><td><button class="btn" onclick="openLead(\\''+l.id+'\\')">فتح</button></td></tr>').join("")+'</tbody></table></div></div>'}
-function filter(s){document.querySelectorAll("tbody tr").forEach(r=>r.style.display=s==="ALL"||r.innerText.includes(s)?"":"none")}
-async function discover(){try{let x=await api("/api/discover",{method:"POST"});alert("اكتشاف: "+x.added+" leads جديدة");load()}catch(e){alert(e.message)}}
-async function seedDemo(){let x=await api("/api/demo",{method:"POST"});alert("تمت إضافة "+x.added);load()}
-async function openLead(id){let l=D.leads.find(x=>x.id===id);$("#modal").classList.remove("hidden");$("#modal").innerHTML='<div><h2>'+esc(l.businessName)+'</h2><p><b>الخدمة:</b> '+esc(l.recommendedServiceLabel||"-")+' — <b>Score:</b> '+(l.score||0)+'/100</p><p><b>Observation:</b> '+esc(l.observation||"")+'</p><p><b>Pain points:</b> '+esc((l.painPoints||[]).join(" • "))+'</p><p><b>Website:</b> '+esc(l.website||"لا يوجد")+'</p><p><b>Phone:</b> '+esc(l.phone||"")+'</p><h3>الرسالة المقترحة</h3><div class="code">'+esc(l.message||"لم يتم توليد رسالة")+'</div><br><div class="actions"><button class="btn primary" onclick="approve(\\''+l.id+'\\')">✅ اعتماد الرسالة</button><button class="btn" onclick="regen(\\''+l.id+'\\')">🤖 إعادة التحليل</button><button class="btn" onclick="status(\\''+l.id+'\\',\\'NOT_INTERESTED\\')">غير مهتم</button></div><br><button class="btn" onclick="closeM()">إغلاق</button></div>'}
-function closeM(){$("#modal").classList.add("hidden")}async function approve(id){await api("/api/leads/"+id+"/approve",{method:"POST"});closeM();load()}async function regen(id){await api("/api/leads/"+id+"/analyze",{method:"POST"});closeM();load()}async function status(id,s){await api("/api/leads/"+id,{method:"PATCH",body:JSON.stringify({status:s})});closeM();load()}load();
-</script></body></html>';
-async function runAnalyze(d,l){const x=await aiAnalyze(l);l.recommendedService=x.recommendedService;l.recommendedServiceLabel=x.recommendedServiceLabel||x.recommendedService;l.score=Number(x.score||score(l).score);l.painPoints=x.painPoints||score(l).reasons;l.observation=x.observation||score(l).reasons[0]||"ملاحظة تحتاج تحقق يدوي";l.message=x.message||"";l.language=x.language||"darija";l.status="MESSAGE_READY";l.analyzedAt=new Date().toISOString();audit(d,"AI_ANALYZE",l.id,l.recommendedService)}
-async function route(req,res){const u=new URL(req.url,"http://localhost"),p=u.pathname,d=await db();if(req.method==="OPTIONS")return json(res,204,{});
-if(req.method==="GET"&&p==="/"){res.writeHead(200,{"content-type":"text/html; charset=utf-8"});return res.end(html)}
-if(req.method==="GET"&&p==="/api/health")return json(res,200,{ok:true,agent:"DZ Sales Agent",model:MODEL,ai:!!process.env.OPENAI_API_KEY,googlePlaces:!!process.env.GOOGLE_MAPS_API_KEY});
-if(req.method==="GET"&&p==="/api/leads")return json(res,200,d);
-if(req.method==="POST"&&p==="/api/demo"){const samples=[{businessName:"Demo Fashion Sétif",city:"Sétif",category:"clothing",website:"",socialActive:true,ecommercePotential:true,weakCreative:true,contactable:true,phone:"0550000000"},{businessName:"Demo Café El Eulma",city:"El Eulma",category:"cafe",website:"https://example.com",websiteWeak:true,weakCreative:true,contactable:true,phone:"0560000000"}];let n=0;for(const s of samples){if(d.leads.some(x=>x.businessName===s.businessName))continue;let l={...s,id:id(),status:"NEW",createdAt:new Date().toISOString()};await runAnalyze(d,l);d.leads.unshift(l);n++}await save(d);return json(res,201,{added:n})}
-if(req.method==="POST"&&p==="/api/discover"){let places=await discover(),n=0;for(const z of places){if(!z.businessName||d.leads.some(x=>x.sourceId===z.sourceId))continue;let l={...z,id:id(),status:"NEW",createdAt:new Date().toISOString(),ecommercePotential:["clothing","cosmetics","electronics","ecommerce"].includes(z.category)};await runAnalyze(d,l);d.leads.unshift(l);n++}await save(d);return json(res,201,{added:n,total:places.length})}
-let m=p.match(/^\/api\/leads\/([^/]+)(?:\/(approve|analyze))?$/);if(m){let l=d.leads.find(x=>x.id===m[1]);if(!l)return json(res,404,{error:"Lead not found"});if(req.method==="PATCH"){Object.assign(l,await body(req));await save(d);return json(res,200,l)}if(req.method==="POST"&&m[2]==="analyze"){await runAnalyze(d,l);await save(d);return json(res,200,l)}if(req.method==="POST"&&m[2]==="approve"){l.status="APPROVED";l.approvedAt=new Date().toISOString();d.outreach.unshift({id:id(),leadId:l.id,status:"APPROVED",message:l.message,createdAt:new Date().toISOString()});audit(d,"APPROVE_MESSAGE",l.id,"Human approval");await save(d);return json(res,200,l)}}return json(res,404,{error:"Not found"})}
-http.createServer((req,res)=>route(req,res).catch(e=>{console.error(e);json(res,500,{error:e.message})})).listen(PORT,"0.0.0.0",()=>console.log("DZ Sales Agent listening on "+PORT));
+async function analyze(l){
+  if(!process.env.OPENAI_API_KEY)return heuristic(l);
+  const prompt="حلل هذا النشاط التجاري الجزائري من البيانات المعطاة فقط. لا تخترع معلومات. أرجع JSON فقط بالمفاتيح: recommendedService (website|landing_page|video|meta_ads|ecommerce), score من 0 إلى 100, painPoints array, observation, message, language (darija|french). الرسالة أقل من 80 كلمة ومخصصة للنشاط ولا تعد بنتائج مضمونة. DATA="+JSON.stringify(l);
+  const r=await fetch("https://api.openai.com/v1/responses",{method:"POST",headers:{"content-type":"application/json","authorization":"Bearer "+process.env.OPENAI_API_KEY},body:JSON.stringify({model:MODEL,input:prompt})});
+  if(!r.ok)throw Error("OpenAI HTTP "+r.status);
+  const x=await r.json(); const t=x.output_text||"";
+  try{return JSON.parse(t.replace(/^```json|```$/g,"").trim())}catch{return heuristic(l);}
+}
+async function places(){
+  if(!process.env.GOOGLE_MAPS_API_KEY)throw Error("GOOGLE_MAPS_API_KEY غير موجود");
+  const out=[];
+  for(const city of CITIES)for(const category of CATEGORIES){
+    const r=await fetch("https://places.googleapis.com/v1/places:searchText",{method:"POST",headers:{"content-type":"application/json","X-Goog-Api-Key":process.env.GOOGLE_MAPS_API_KEY,"X-Goog-FieldMask":"places.id,places.displayName,places.formattedAddress,places.websiteUri,places.nationalPhoneNumber,places.types,places.rating,places.userRatingCount"},body:JSON.stringify({textQuery:category+" in "+city+", Algeria",pageSize:10,languageCode:"ar"})});
+    if(!r.ok)continue; const x=await r.json();
+    for(const p of x.places||[])out.push({sourceId:p.id,source:"google_places",businessName:p.displayName?.text||"",city,category,address:p.formattedAddress||"",website:p.websiteUri||"",phone:p.nationalPhoneNumber||"",rating:p.rating,userRatingCount:p.userRatingCount,contactable:!!p.websiteUri||!!p.nationalPhoneNumber,ecommercePotential:["clothing","cosmetics","electronics","ecommerce"].includes(category)});
+  }
+  return out;
+}
+function html(){
+return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DZ Sales Agent</title><style>
+body{margin:0;background:#0b1220;color:#eef4ff;font-family:Arial,sans-serif}.wrap{max-width:1400px;margin:auto;padding:24px}.top{display:flex;justify-content:space-between;gap:15px;align-items:center}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:20px 0}.card,.panel{background:#111d31;border:1px solid #2a3c58;border-radius:14px;padding:16px}.card b{font-size:28px}.btn{background:#1b2b45;color:white;border:1px solid #405473;padding:10px 14px;border-radius:9px;cursor:pointer;margin:3px}.primary{background:#00a77d;border-color:#00a77d}.table{width:100%;border-collapse:collapse}.table th,.table td{padding:11px;border-bottom:1px solid #263650;text-align:right}.muted{color:#91a5c5}.tag{background:#20324f;border-radius:20px;padding:5px 9px}.modal{position:fixed;inset:0;background:#000c;display:flex;align-items:center;justify-content:center;padding:20px}.modal>div{background:#111d31;border-radius:14px;padding:22px;max-width:800px;width:100%;max-height:90vh;overflow:auto}.hidden{display:none}.msg{white-space:pre-wrap;background:#08101d;padding:14px;border-radius:9px}</style></head><body><div class="wrap"><div class="top"><div><h1>🎯 DZ Sales Agent</h1><div class="muted">Lead discovery • AI audit • qualification • personalized outreach</div></div><div><button class="btn primary" onclick="discover()">🔎 اكتشاف Sétif + El Eulma</button><button class="btn" onclick="demo()">🧪 Demo</button></div></div><div id="app"></div></div><div id="modal" class="modal hidden"></div><script>
+let D={};
+const esc=x=>String(x??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+async function api(p,o={}){const r=await fetch(p,{...o,headers:{"content-type":"application/json"}});const x=await r.json();if(!r.ok)throw Error(x.error||"Error");return x}
+async function load(){D=await api("/api/leads");render()}
+function render(){const a=D.leads||[];const c={};a.forEach(x=>c[x.status]=(c[x.status]||0)+1);document.getElementById("app").innerHTML="<div class='cards'><div class='card'>كل الـLeads<br><b>"+a.length+"</b></div><div class='card'>رسائل جاهزة<br><b>"+(c.MESSAGE_READY||0)+"</b></div><div class='card'>معتمدة<br><b>"+(c.APPROVED||0)+"</b></div><div class='card'>مهتمون<br><b>"+(c.INTERESTED||0)+"</b></div></div><div class='panel'><div style='overflow:auto'><table class='table'><thead><tr><th>Business</th><th>City</th><th>Service</th><th>Score</th><th>Status</th><th></th></tr></thead><tbody>"+a.map(l=>"<tr><td><b>"+esc(l.businessName)+"</b><br><span class='muted'>"+esc(l.category)+"</span></td><td>"+esc(l.city)+"</td><td><span class='tag'>"+esc(l.recommendedServiceLabel||"-")+"</span></td><td>"+(l.score||0)+"/100</td><td>"+esc(l.status)+"</td><td><button class='btn' onclick='openLead(""+l.id+"")'>فتح</button></td></tr>").join("")+"</tbody></table></div></div>"}
+async function discover(){try{const x=await api("/api/discover",{method:"POST"});alert("تم اكتشاف "+x.added+" Lead جديد");load()}catch(e){alert(e.message)}}
+async function demo(){try{const x=await api("/api/demo",{method:"POST"});alert("تمت إضافة "+x.added+" Demo");load()}catch(e){alert(e.message)}}
+function closeM(){document.getElementById("modal").classList.add("hidden")}
+async function openLead(id){const l=D.leads.find(x=>x.id===id);document.getElementById("modal").classList.remove("hidden");document.getElementById("modal").innerHTML="<div><h2>"+esc(l.businessName)+"</h2><p><b>الخدمة:</b> "+esc(l.recommendedServiceLabel||"-")+" &nbsp; <b>Score:</b> "+(l.score||0)+"/100</p><p><b>الملاحظة:</b> "+esc(l.observation||"")+"</p><p><b>نقاط الألم:</b> "+esc((l.painPoints||[]).join(" • "))+"</p><p><b>Website:</b> "+esc(l.website||"لا يوجد")+"</p><p><b>Phone:</b> "+esc(l.phone||"")+"</p><h3>الرسالة</h3><div class='msg'>"+esc(l.message||"لا توجد رسالة بعد")+"</div><br><button class='btn primary' onclick='approve(""+l.id+"")'>✅ اعتماد الرسالة</button><button class='btn' onclick='reanalyze(""+l.id+"")'>🤖 إعادة التحليل</button><button class='btn' onclick='closeM()'>إغلاق</button></div>"}
+async function approve(id){await api("/api/leads/"+id+"/approve",{method:"POST"});closeM();load()}
+async function reanalyze(id){await api("/api/leads/"+id+"/analyze",{method:"POST"});closeM();load()}
+load();
+</script></body></html>`}
+async function runAnalyze(d,l){const x=await analyze(l);Object.assign(l,x,{id:l.id,status:"MESSAGE_READY",analyzedAt:new Date().toISOString()});d.audits.unshift({id:ID(),leadId:l.id,action:"AI_ANALYZE",at:new Date().toISOString()})}
+async function route(req,res){
+ const u=new URL(req.url,"http://localhost"),p=u.pathname,d=await load();
+ if(req.method==="GET"&&p==="/")return send(res,200,html(),"text/html");
+ if(req.method==="GET"&&p==="/api/health")return send(res,200,{ok:true,agent:"DZ Sales Agent",ai:!!process.env.OPENAI_API_KEY,googlePlaces:!!process.env.GOOGLE_MAPS_API_KEY});
+ if(req.method==="GET"&&p==="/api/leads")return send(res,200,d);
+ if(req.method==="POST"&&p==="/api/demo"){let n=0;for(const s of [{businessName:"Demo Fashion Sétif",city:"Sétif",category:"clothing",website:"",socialActive:true,ecommercePotential:true,weakCreative:true,contactable:true,phone:"0550000000"},{businessName:"Demo Café El Eulma",city:"El Eulma",category:"cafe",website:"https://example.com",websiteWeak:true,weakCreative:true,contactable:true,phone:"0560000000"}]){if(d.leads.some(x=>x.businessName===s.businessName))continue;const l={...s,id:ID(),status:"NEW",createdAt:new Date().toISOString()};await runAnalyze(d,l);d.leads.unshift(l);n++}await save(d);return send(res,201,{added:n})}
+ if(req.method==="POST"&&p==="/api/discover"){const ps=await places();let n=0;for(const z of ps){if(!z.businessName||d.leads.some(x=>x.sourceId===z.sourceId))continue;const l={...z,id:ID(),status:"NEW",createdAt:new Date().toISOString()};await runAnalyze(d,l);d.leads.unshift(l);n++}await save(d);return send(res,201,{added:n,total:ps.length})}
+ const m=p.match(/^\/api\/leads\/([^/]+)(?:\/(approve|analyze))?$/);
+ if(m){const l=d.leads.find(x=>x.id===m[1]);if(!l)return send(res,404,{error:"Lead not found"});if(req.method==="POST"&&m[2]==="analyze"){await runAnalyze(d,l);await save(d);return send(res,200,l)}if(req.method==="POST"&&m[2]==="approve"){l.status="APPROVED";l.approvedAt=new Date().toISOString();d.outreach.unshift({id:ID(),leadId:l.id,message:l.message,status:"APPROVED",at:new Date().toISOString()});await save(d);return send(res,200,l)}if(req.method==="PATCH"){Object.assign(l,await reqBody(req));await save(d);return send(res,200,l)}}
+ return send(res,404,{error:"Not found"});
+}
+http.createServer((req,res)=>route(req,res).catch(e=>{console.error(e);send(res,500,{error:e.message})})).listen(PORT,"0.0.0.0",()=>console.log("DZ Sales Agent listening on "+PORT));
