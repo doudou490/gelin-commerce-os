@@ -274,7 +274,7 @@ async function route(req,res) {
   }
   if(req.method==="GET"&&p==="/api/export.csv"){
     const keys=["businessName","category","city","address","phone","website","facebook","instagram","score","recommendedServiceLabel","observation","status","message","nextFollowupAt"];
-    const q=v=>"""+String(v??"").replace(/"/g,'""')+""";
+    const q=v=>'"'+String(v??"").replace(/"/g,'""')+'"';
     const csv=[keys.join(","),...d.leads.map(l=>keys.map(k=>q(l[k])).join(","))].join("\n");
     res.writeHead(200,{"content-type":"text/csv; charset=utf-8","content-disposition":"attachment; filename=dz-sales-leads.csv"});
     return res.end("\ufeff"+csv);
